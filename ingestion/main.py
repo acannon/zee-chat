@@ -2,15 +2,44 @@ from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
 import anthropic
 import os
+import re
 from supabase import create_client
 
 app = FastAPI()
 
 supabase = create_client(
     os.environ["SUPABASE_URL"],
-    os.environ["SUPABASE_SERVICE_KEY"]
+    os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 )
 claude = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+
+def sample_document(content: bytes, chunk_size: int = 1000, num_chunks: int = 5) -> str:
+    """Sample chunks from beginning, middle, and end of document."""
+    text = content.decode("utf-8", errors="ignore")
+    total = len(text)
+
+    if total <= chunk_size * num_chunks:
+        return text
+
+    positions = [0]
+    for i in range(1, num_chunks - 1):
+        positions.append(int(total * i / (num_chunks - 1)))
+    positions.append(total - chunk_size)
+
+    chunks = []
+    for pos in positions:
+        start = max(0, pos)
+        chunks.append(text[start:start + chunk_size])
+
+    return "\n\n[...]\n\n".join(chunks)
+
+
+def make_slug(text: str) -> str:
+    """Convert title to alpha-only uppercase slug."""
+    letters_only = re.sub(r'[^a-zA-Z\s]', '', text)
+    words = letters_only.upper().split()
+    return "".join(w[:3] for w in words[:4])
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -32,40 +61,37 @@ def index():
 
 @app.post("/generate-title", response_class=HTMLResponse)
 def generate_title(doc_name: str = Form(...)):
-    # Fetch file from Supabase Storage
     try:
         response = supabase.storage.from_("unprocessed").download(doc_name)
     except Exception as e:
         return _page(f"<p style='color:red'>Could not fetch file: {e}</p>")
 
-    # Grab a small chunk from the top of the file
-    content_preview = response[:3000].decode("utf-8", errors="ignore")
+    content_sample = sample_document(response)
 
-    # Ask Claude for a title
     message = claude.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=100,
         messages=[{
             "role": "user",
             "content": (
-                f"Here is the beginning of a roleplay document:\n\n{content_preview}\n\n"
-                "Generate a short, descriptive title for this document (max 8 words). "
+                f"Here are samples from throughout a roleplay document:\n\n{content_sample}\n\n"
+                "Generate a short, descriptive title for this document (max 6 words). "
                 "Return only the title, nothing else."
             )
         }]
     )
     title = message.content[0].text.strip()
+    short_title = make_slug(title)
 
-    # Update doc_processing_log
     result = supabase.table("doc_processing_log")\
-        .update({"title": title})\
+        .update({"title": title, "short_title": short_title})\
         .eq("doc_name", doc_name)\
         .execute()
 
     if not result.data:
-        return _page(f"<p style='color:orange'>Title generated but no matching row found for <b>{doc_name}</b>. Is it in doc_processing_log?</p>")
+        return _page(f"<p style='color:orange'>Generated but no matching row found for <b>{doc_name}</b>. Is it in doc_processing_log?</p>")
 
-    return _page(f"<p>✓ <b>{doc_name}</b> → <b>{title}</b></p>")
+    return _page(f"<p>✓ <b>{doc_name}</b><br>title: <b>{title}</b><br>short_title: <b>{short_title}</b></p>")
 
 
 def _page(body: str) -> str:
