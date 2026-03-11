@@ -142,6 +142,40 @@ class Pipeline:
             return None
 
     ###
+    # Retrieve memories
+    ###
+    def seed_personality(self):
+        try:
+            personality_result = self.supabase_client.table("engine_config")\
+                .select("value")\
+                .eq("doc_type", "personality_injection")\
+                .execute()
+            
+            print(f"Retrieved personality record: {personality_result.data}")
+
+            personality_docs = [r["value"] for r in personality_result.data]
+            return "\n\n".join(personality_docs)
+        
+        except Exception as e:
+            raise Exception(f"Could not retrieve personality docs: {e}")
+                
+    def seed_zee_memory(self):
+        try:
+            zee_memory_results = self.supabase_client.table("engine_config")\
+                .select("value")\
+                .eq("doc_type", "zee_memory")\
+                .execute()
+            
+            print(f"Retrieved personality record: {zee_memory_results.data}")
+
+            zee_memory_content = [r["value"] for r in zee_memory_results.data]
+            return "\n\n".join(zee_memory_content)
+        
+        except Exception as e:
+            raise Exception(f"Could not retrieve zee_memory docs: {e}")       
+
+
+    ###
     # Pipelines required methods
     ###
 
@@ -169,20 +203,11 @@ class Pipeline:
             raise Exception("Pipeline not ready — check env vars and Supabase connection")
 
         # retrieve and inject static personality doc
-        try:
-            personality_result = self.supabase_client.table("engine_config")\
-                .select("value")\
-                .eq("doc_type", "personality_injection")\
-                .execute()
-            
-            print(f"Retrieved personality record: {personality_result.data}")
+        personality_content = self.seed_personality()
+        zee_memory_content = self.seed_zee_memory()
 
-            personality_docs = [r["value"] for r in personality_result.data]
-            personality_content = "\n\n".join(personality_docs)
-        
-        except Exception as e:
-            print(f"ERROR: could not retrieve personality docs: {e}")
-            return None
+        # compile system mesage
+        system_message = personality_content + zee_memory_content
 
 
         # clean messages to pass conversation
@@ -196,7 +221,7 @@ class Pipeline:
         response = self.anthropic_client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=1024,
-            system=personality_content,
+            system=system_message,
             messages=clean_messages
         )
 
