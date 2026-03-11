@@ -1,0 +1,20 @@
+{
+   "model":"logging_pipeline",
+   "messages":[
+      {
+         "id":"11896b21-cc5a-4360-b959-859d37aa9434",
+         "role":"user",
+         "content":"what’s your favorite thing about binturong?",
+         "timestamp":1772946061
+      },
+      {
+         "id":"6ba8427a-2551-49cb-9acd-0461329c6d5a",
+         "role":"assistant",
+         "content":"I find their scent fascinating! Binturongs smell like buttered popcorn because they produce a compound called 2-acetyl-1-pyrroline - the same chemical that gives popcorn and certain baked goods their distinctive aroma. It's such an unexpectedly delightful trait for what looks like a small bear-cat hybrid.\n\nI also love how they're one of only two carnivores (along with kinkajous) that can rotate their ankles 180 degrees, letting them climb down trees headfirst like a squirrel. They're these wonderfully quirky creatures that seem almost mythical - prehensile tails, popcorn scent, incredible climbing abilities, and they're important seed dispersers in Southeast Asian forests. What drew you to ask about binturongs?",
+         "timestamp":1772946061
+      }
+   ],
+   "chat_id":"85c68240-5449-4181-81b0-4517a7a2eefc",
+   "session_id":"4Ha5fihOE02bWNmUAAAB",
+   "id":"6ba8427a-2551-49cb-9acd-0461329c6d5a"
+}

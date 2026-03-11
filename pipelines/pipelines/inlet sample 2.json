@@ -1,0 +1,115 @@
+{
+  "message": "Inlet received: {
+   "stream":true,
+   "model":"logging_pipeline",
+   "messages":[
+      {
+         "role":"user",
+         "content":"Tell me a fun animal fact!"
+      }
+   ],
+   "features":{
+      "voice":false,
+      "image_generation":false,
+      "code_interpreter":false,
+      "web_search":false
+   },
+   "metadata":{
+      "user_id":"6598908e-5ded-4461-bb62-ea9d85bb5b01",
+      "chat_id":"232d940b-6cf8-4038-978b-1d9f1915bd22",
+      "message_id":"ca7ceff5-0327-41cf-95ca-df2e1215da32",
+      "parent_message":{
+         "id":"af60843a-f43b-4f37-8577-c6ca2eddb935",
+         "parentId":"None",
+         "childrenIds":[
+            "ca7ceff5-0327-41cf-95ca-df2e1215da32"
+         ],
+         "role":"user",
+         "content":"Tell me a fun animal fact!",
+         "timestamp":1772945039,
+         "models":[
+            "logging_pipeline"
+         ]
+      },
+      "parent_message_id":"af60843a-f43b-4f37-8577-c6ca2eddb935",
+      "session_id":"4Ha5fihOE02bWNmUAAAB",
+      "filter_ids":[
+         
+      ],
+      "tool_ids":"None",
+      "tool_servers":[
+         
+      ],
+      "files":"None",
+      "features":{
+         "voice":false,
+         "image_generation":false,
+         "code_interpreter":false,
+         "web_search":false
+      },
+      "variables":{
+         "{{USER_NAME}}":"zee",
+         "{{USER_EMAIL}}":"cannonalexandra@gmail.com",
+         "{{USER_LOCATION}}":"Unknown",
+         "{{CURRENT_DATETIME}}":"2026-03-07 20:44:00",
+         "{{CURRENT_DATE}}":"2026-03-07",
+         "{{CURRENT_TIME}}":"20:44:00",
+         "{{CURRENT_WEEKDAY}}":"Saturday",
+         "{{CURRENT_TIMEZONE}}":"America/Los_Angeles",
+         "{{USER_LANGUAGE}}":"en-US"
+      },
+      "model":{
+         "id":"logging_pipeline",
+         "name":"logging_pipeline",
+         "object":"model",
+         "created":1772945050,
+         "owned_by":"openai",
+         "pipeline":{
+            "type":"pipe",
+            "valves":false
+         },
+         "connection_type":"external",
+         "openai":{
+            "id":"logging_pipeline",
+            "name":"logging_pipeline",
+            "object":"model",
+            "created":1772945050,
+            "owned_by":"openai",
+            "pipeline":{
+               "type":"pipe",
+               "valves":false
+            },
+            "connection_type":"external"
+         },
+         "urlIdx":1,
+         "actions":[
+            
+         ],
+         "filters":[
+            
+         ],
+         "tags":[
+            
+         ]
+      },
+      "direct":false,
+      "params":{
+         "stream_delta_chunk_size":"None",
+         "reasoning_tags":"None",
+         "function_calling":"default"
+      }
+   }
+}",
+  "severity": "info",
+  "attributes": {
+    "level": "info"
+  },
+  "tags": {
+    "project": "0b8a28b0-91a1-4714-aaf8-45c775c52ea0",
+    "environment": "26f45781-a0b9-482a-b00d-fc5bff67ddfb",
+    "service": "65b0071b-53f5-44bf-8cab-8eb1942157b1",
+    "deployment": "b39987ff-8684-47e2-82de-af144fae773f",
+    "replica": "3ede1737-6ecb-4aaf-96f2-bdca96c97175"
+  },
+  "timestamp": "2026-03-08T04:44:30.662620753Z"
+}
