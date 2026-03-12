@@ -178,16 +178,17 @@ class Pipeline:
 
             # get uncompressed messages
             uncompressed_messages = [m for m in all_messages if m["timestamp"] > last_compressed_at_unix]
+            count = len(uncompressed_messages)
 
             print(f"There have been {count} messages since last compression at {last_compressed_at_dt}.")
 
         else:
             uncompressed_messages = all_messages
+            count = len(uncompressed_messages)
             last_compressed_at = None
 
             print(f"No compression has occurred for this conversation yet. There have been {count} messages.")
 
-        count = len(uncompressed_messages)
 
         # get trigger point for message compression
         trigger_num_record = self.supabase_client.table("engine_config")\
@@ -313,7 +314,11 @@ class Pipeline:
         if not self.ready:
             raise Exception("Pipeline not ready — check env vars and Supabase connection")
         
+        # check for OWUI system messages; do not log
         if body.get("files"):
+            return body
+        last_message = body["messages"][-1].get("content", "")
+        if last_message.startswith("### Task:"):
             return body
         
         # print(f"Inlet received: {body}")
@@ -351,7 +356,7 @@ class Pipeline:
             if m.get("content")
         ]
 
-        print(f"clean_messages: {clean_messages}")
+        # print(f"clean_messages: {clean_messages}")
         response = self.anthropic_client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=8192,
