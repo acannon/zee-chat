@@ -7,7 +7,7 @@ from pydantic import BaseModel
 import anthropic
 import os
 from supabase import create_client
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 
 class Pipeline:
@@ -16,8 +16,14 @@ class Pipeline:
 
     def __init__(self):
         # self.var_name allows var_name to exist outside of init
-        self.name = "logging_and_personality"
+        self.name = "personality_with_memory"
         self.ready = False
+
+        # create caches
+        self._personality_cache = None
+        self._zee_memory_cache = None
+        self._zee_memory_cached_at = None
+        self._zee_memory_ttl = timedelta(hours=1)        
 
         # Anthropic client
         anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -147,6 +153,8 @@ class Pipeline:
     # Compress to midterm memory
     ###
     async def run_compression(self, current_conversation_id, body: dict):
+        print("...Beginning compression check...")
+
         # get messages from body
         all_messages = [
             {"role": m["role"], "content": m["content"], "timestamp": m.get("timestamp", 0)}
@@ -170,16 +178,16 @@ class Pipeline:
 
             # get uncompressed messages
             uncompressed_messages = [m for m in all_messages if m["timestamp"] > last_compressed_at_unix]
-            count = len(uncompressed_messages)
 
             print(f"There have been {count} messages since last compression at {last_compressed_at_dt}.")
 
         else:
             uncompressed_messages = all_messages
-            count = len(uncompressed_messages)
             last_compressed_at = None
 
             print(f"No compression has occurred for this conversation yet. There have been {count} messages.")
+
+        count = len(uncompressed_messages)
 
         # get trigger point for message compression
         trigger_num_record = self.supabase_client.table("engine_config")\
@@ -191,7 +199,7 @@ class Pipeline:
 
         # if count > 20, create an array of the oldest 20 messages 
         if count > trigger_num:
-            print("...Running midterm memory compression...")
+            print("...Trigger met; running midterm memory compression...")
 
             # get oldest 20 messages that have not been compressed
             last_x_messages = [
@@ -200,12 +208,14 @@ class Pipeline:
             ]
 
             # get compression prompt
+            # TODO: error handling for db call
             midterm_compression_instructions = self.supabase_client.table("engine_config")\
                 .select("value")\
                 .eq("doc_type", "midterm_compression")\
                 .execute()
 
             # create compression doc with haiku model
+            # TODO: error handling for anthropic API call
             compression_doc = self.anthropic_client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=8192,
@@ -213,14 +223,16 @@ class Pipeline:
                 messages=last_x_messages
             )
 
+            print(f"SUMMARY: {compression_doc}")
+
             # add to compression_log
             try:
-                log_result = self.supabase_client.table("compression_log")\
+                compression_log_result = self.supabase_client.table("compression_log")\
                     .insert({
                         "conversation_id": current_conversation_id
                     })\
                     .execute()
-                print(f"Created compression log: {log_result.data[0]}")
+                print(f"Created compression log: {compression_log_result.data[0]}")
 
             except Exception as e:
                 print(f"ERROR: compression log failed: {e}")
@@ -228,7 +240,7 @@ class Pipeline:
 
             # add compression_doc to midterm_memory           
             try:
-                log_result = self.supabase_client.table("midterm_memory")\
+                compression_doc_result = self.supabase_client.table("midterm_memory")\
                     .insert({
                         "conversation_id": current_conversation_id,
                         "summary": {"text": compression_doc.content[0].text},
@@ -237,7 +249,7 @@ class Pipeline:
                             uncompressed_messages[trigger_num-1]["timestamp"]).isoformat()
                     })\
                     .execute()
-                print(f"Inserted compression doc: {log_result.data[0]}")
+                print(f"Inserted compression doc: {compression_doc_result.data[0]}")
 
             except Exception as e:
                 print(f"ERROR: compression doc insertion failed: {e}")
@@ -250,6 +262,9 @@ class Pipeline:
     # Retrieve memories
     ###
     def seed_personality(self):
+        if self._personality_cache:
+            return self._personality_cache
+    
         try:
             personality_result = self.supabase_client.table("engine_config")\
                 .select("value")\
@@ -259,12 +274,19 @@ class Pipeline:
             print(f"Retrieved personality record: {personality_result.data}")
 
             personality_docs = [r["value"] for r in personality_result.data]
+            self._personality_cache = "\n\n".join(personality_docs)
             return "\n\n".join(personality_docs)
         
         except Exception as e:
             raise Exception(f"Could not retrieve personality docs: {e}")
                 
     def seed_zee_memory(self):
+        now = datetime.now()
+        # if there is a cache and it was cached less than an hour ago
+        if (self._zee_memory_cache and self._zee_memory_cached_at 
+            and now - self._zee_memory_cached_at < self._zee_memory_ttl):
+            return self._zee_memory_cache
+        
         try:
             zee_memory_results = self.supabase_client.table("engine_config")\
                 .select("value")\
@@ -274,6 +296,8 @@ class Pipeline:
             print(f"Retrieved zee_memory record: {zee_memory_results.data}")
 
             zee_memory_content = [r["value"] for r in zee_memory_results.data]
+            self._zee_memory_cache = "\n\n".join(zee_memory_content)
+            self._zee_memory_cached_at = now
             return "\n\n".join(zee_memory_content)
         
         except Exception as e:
@@ -289,7 +313,10 @@ class Pipeline:
         if not self.ready:
             raise Exception("Pipeline not ready — check env vars and Supabase connection")
         
-        print(f"Inlet received: {body}")
+        if body.get("files"):
+            return body
+        
+        # print(f"Inlet received: {body}")
 
         # log user message
         # all messages must be attached to a conversation, so log message will check
@@ -340,7 +367,7 @@ class Pipeline:
         if not self.ready:
             raise Exception("Pipeline not ready — check env vars and Supabase connection")
 
-        print(f"Outlet received: {body}")
+        # print(f"Outlet received: {body}")
         
         # log assistant message
         # all messages must be attached to a conversation, so log message will check
