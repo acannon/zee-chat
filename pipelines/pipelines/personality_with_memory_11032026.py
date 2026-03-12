@@ -9,7 +9,7 @@ import os
 from supabase import create_client
 from datetime import datetime, timedelta
 import asyncio
-import openai from OpenAI
+from openai import OpenAI
 
 class Pipeline:
     class Valves(BaseModel):
@@ -258,15 +258,9 @@ class Pipeline:
                 messages=[{"role": "system", "content": midterm_compression_instructions.data[0]["value"]}] + last_x_messages
             )
 
-            compression_text = compression_doc.choices[0].message.content
-
-
+            # compression_text = compression_doc.choices[0].message.content
             print(f"FULL RESPONSE: {compression_doc}")
-            print(f"Content type: {type(compression_doc.content)}")
-            print(f"Content length: {len(compression_doc.content)}")
-            if compression_doc.content:
-                print(f"First block type: {type(compression_doc.content[0])}")
-
+        
             # check if empty
             if not compression_doc.choices[0].message.content:
                 print("ERROR: Grok returned empty content, skipping compression")
