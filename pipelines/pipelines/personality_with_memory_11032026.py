@@ -1,5 +1,5 @@
 """
-requirements: anthropic, supabase==2.10.0, pydantic==2.7.1
+requirements: anthropic, supabase==2.10.0, pydantic==2.7.1, openai
 """
 
 from typing import List, Optional, Union, Generator, Iterator
@@ -9,6 +9,7 @@ import os
 from supabase import create_client
 from datetime import datetime, timedelta
 import asyncio
+import openai from OpenAI
 
 class Pipeline:
     class Valves(BaseModel):
@@ -39,6 +40,24 @@ class Pipeline:
                 print(f"ERROR: Anthropic connection failed: {e}")
                 self.anthropic_client = None
 
+        # Grok client
+        grok_api_key = os.getenv("XAI_API_KEY")
+
+        if not grok_api_key:
+            print("ERROR: XAI_API_KEY not found")
+            self.grok_client = None
+        else:
+            try:
+                self.grok_client = OpenAI(
+                    api_key=grok_api_key,
+                    base_url="https://api.x.ai/v1"
+                )
+                print("SUCCESS: Grok connected")
+            except Exception as e:
+                print(f"ERROR: Grok connection failed: {e}")
+                self.grok_client = None
+        
+
         # Supabase client
         sb_url = os.getenv("SUPABASE_URL")
         sb_key = os.getenv("SUPABASE_SERVICE_KEY")
@@ -54,7 +73,7 @@ class Pipeline:
                 print(f"ERROR: Supabase connection failed: {e}")
                 self.supabase_client = None
         
-        if self.anthropic_client and self.supabase_client:
+        if self.anthropic_client and self.supabase_client and self.grok_client:
             self.ready = True
 
     def get_conversation_id(self, owui_chat_id):
@@ -223,18 +242,34 @@ class Pipeline:
             # create compression doc with haiku model
             # TODO: error handling for anthropic API call
             print(f"Compression system prompt: {midterm_compression_instructions.data[0]['value'][:200]}")
-            print(f"Messages being compressed: {last_x_messages[0]}")
             print(f"Message count: {len(last_x_messages)}")
+            print(f"All messages being compressed:")
+            for i, m in enumerate(last_x_messages):
+                print(f"  [{i}] {m['role']}: {repr(m['content'][:100])}")
 
-            compression_doc = self.anthropic_client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=8192,
-                system=midterm_compression_instructions.data[0]["value"],
-                messages=last_x_messages
+            # compression_doc = self.anthropic_client.messages.create(
+            #     model="claude-sonnet-4-20250514",
+            #     max_tokens=8192,
+            #     system=midterm_compression_instructions.data[0]["value"],
+            #     messages=last_x_messages
+            # )
+            compression_doc = self.grok_client.chat.completions.create(
+                model="grok-3-mini",
+                messages=[{"role": "system", "content": midterm_compression_instructions.data[0]["value"]}] + last_x_messages
             )
 
-            if not compression_doc.content:
-                print("ERROR: Haiku returned empty content, skipping compression")
+            compression_text = compression_doc.choices[0].message.content
+
+
+            print(f"FULL RESPONSE: {compression_doc}")
+            print(f"Content type: {type(compression_doc.content)}")
+            print(f"Content length: {len(compression_doc.content)}")
+            if compression_doc.content:
+                print(f"First block type: {type(compression_doc.content[0])}")
+
+            # check if empty
+            if not compression_doc.choices[0].message.content:
+                print("ERROR: Grok returned empty content, skipping compression")
                 return None
 
             print(f"SUMMARY: {compression_doc}")
@@ -257,7 +292,7 @@ class Pipeline:
                 compression_doc_result = self.supabase_client.table("midterm_memory")\
                     .insert({
                         "conversation_id": current_conversation_id,
-                        "summary": {"text": compression_doc.content[0].text},
+                        "summary": {"text": compression_doc.choices[0].message.content},
                         # "embedding":"",
                         "covers_through": datetime.fromtimestamp(
                             uncompressed_messages[trigger_num-1]["timestamp"]).isoformat()
