@@ -203,8 +203,14 @@ class Pipeline:
 
             # get oldest 20 messages that have not been compressed
             last_x_messages = [
-                {"role": m["role"], "content": m["content"]}
+                {
+                    "role": m["role"],
+                    "content": m["content"] if isinstance(m["content"], str) else " ".join(
+                        part.get("text", "") for part in m["content"] if isinstance(part, dict)
+                    )
+                }
                 for m in uncompressed_messages[:trigger_num]
+                if m.get("content")
             ]
 
             # get compression prompt
@@ -222,6 +228,10 @@ class Pipeline:
                 system=midterm_compression_instructions.data[0]["value"],
                 messages=last_x_messages
             )
+
+            if not compression_doc.content:
+                print("ERROR: Haiku returned empty content, skipping compression")
+                return None
 
             print(f"SUMMARY: {compression_doc}")
 
