@@ -126,7 +126,6 @@ class Pipeline:
             return None
         
         # TODO: in unlikely instance where owui_message_id exists, abort
-
         # else, add record to message_log table
         message = body["messages"][-1]
 
@@ -315,8 +314,6 @@ class Pipeline:
             raise Exception("Pipeline not ready — check env vars and Supabase connection")
         
         # check for OWUI system messages; do not log
-        if body.get("files"):
-            return body
         last_message = body["messages"][-1].get("content", "")
         if last_message.startswith("### Task:"):
             return body
@@ -325,8 +322,12 @@ class Pipeline:
 
         # log user message
         # all messages must be attached to a conversation, so log message will check
-        if result := self.log_message(body, "in"):
+        result = self.log_message(body, "in")
+        print(f"DEBUG log_message result: {result}")
+
+        if result:
             message_uuid, conversation_uuid = result
+            print("DEBUG compression task starting soon")
             asyncio.create_task(self.run_compression(conversation_uuid, body))
             return body
         else:
