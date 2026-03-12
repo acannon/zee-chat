@@ -222,8 +222,12 @@ class Pipeline:
 
             # create compression doc with haiku model
             # TODO: error handling for anthropic API call
+            print(f"Compression system prompt: {midterm_compression_instructions.data[0]['value'][:200]}")
+            print(f"Messages being compressed: {last_x_messages[0]}")
+            print(f"Message count: {len(last_x_messages)}")
+
             compression_doc = self.anthropic_client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model="claude-sonnet-4-20250514",
                 max_tokens=8192,
                 system=midterm_compression_instructions.data[0]["value"],
                 messages=last_x_messages
