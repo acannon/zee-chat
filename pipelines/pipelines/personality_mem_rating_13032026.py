@@ -29,7 +29,8 @@ class Pipeline:
         self._zee_memory_cache = None
         self._zee_memory_cached_at = None
         self._zee_memory_ttl = timedelta(hours=1)
-        self._rating_instruction_cache = None        
+        self._rating_instruction_cache = None
+        self._rp_missive_cache = None        
 
         # set up clients
         anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -167,15 +168,14 @@ class Pipeline:
 #####################
 # COMPRESSION TO MIDTERM MEMORY
 #####################
-    async def run_compression(self, current_conversation_id, body: dict, chunk_size):
+    async def run_compression(self, current_conversation_id, chunk_size):
         print("...Beginning compression check...")
+        # TODO: check if conversation is a type that should be compressed to midterm
+        # type determination could happen now or could be a flag on the conversation
+        # also consider that conversations can ebb and flow
+        # possible that the primary agent needs to change the flag?
 
-        # get messages from body
-        all_messages = [
-            {"role": m["role"], "content": m["content"], "timestamp": m.get("timestamp", 0)}
-            for m in body["messages"]
-        ]
-        
+        # check compression log for this conversation
         most_recent_covers_through = await asyncio.to_thread(
             lambda: self.supabase_client.table("compression_log")\
             .select("covers_through")\
@@ -185,7 +185,7 @@ class Pipeline:
             .execute()
         )
 
-        # if there has been compression for this conversation, get the last_compressed_at timestamp
+        # if there has been compression for this conversation, pull messages based on its covers_through
         if most_recent_covers_through.data:
             # get timestamp and convert
             latest_compression = most_recent_covers_through.data[0]["covers_through"]
@@ -193,19 +193,40 @@ class Pipeline:
             latest_compression_at_unix = latest_compression_at_dt.timestamp() 
             print(f"latest_compression: {latest_compression} | _at_dt: {latest_compression_at_dt} | _at_unix: {latest_compression_at_unix}")
 
-            # get uncompressed messages
-            uncompressed_messages = [m for m in all_messages if m["timestamp"] > latest_compression_at_unix]
-            count = len(uncompressed_messages)
+            # get messages from db more recent
+            sb_result = await asyncio.to_thread(
+                lambda: self.supabase_client.table("message_log")\
+                .select("sender_role","content","created_at")\
+                .eq("conversation_id",current_conversation_id)\
+                .gt("created_at",latest_compression)
+                .order("created_at", desc=False)\
+                .execute()
+            )
+            all_messages = sb_result.data
+            count = len(all_messages)
 
-            print(f"example uncompressed: {uncompressed_messages[0]}")
+            print(f"messages count: {count}, first: {all_messages[0] if all_messages else 'EMPTY'}")
             print(f"There have been {count} messages since last compression at {latest_compression_at_dt}.")
 
+        # otherwise, get all messages for conversation
         else:
-            uncompressed_messages = all_messages
-            count = len(uncompressed_messages)
+            sb_result = await asyncio.to_thread(
+                lambda: self.supabase_client.table("message_log")\
+                .select("sender_role","content","created_at")\
+                .eq("conversation_id",current_conversation_id)\
+                .order("created_at", desc=False)\
+                .execute()
+            )
+            all_messages = sb_result.data
+            count = len(all_messages)
             latest_compression = None
 
-            print(f"No compression has occurred for this conversation yet. There have been {count} messages.")
+            print(f"No compression has occurred for this conversation yet. There have been {count} messages.")        
+
+        # get messages from body
+        print(f"all_messages[0]: {all_messages[0]}")
+        print(f"messages: {[m['content'] for m in all_messages]}")
+
 
         if count > chunk_size:
             print("...Trigger met; running midterm memory compression...")
@@ -220,28 +241,26 @@ class Pipeline:
             count_uncompressed = count
             next_pointer = 0
 
-            while next_pointer < len(uncompressed_messages) and count_uncompressed >= chunk_size:
+            while next_pointer < count and count_uncompressed >= chunk_size:
                 # create one string from messages in range
                 x_messages = []
 
-                for m in uncompressed_messages[next_pointer:chunk_size+next_pointer]:
-                    if isinstance(m["content"], str):
-                        content = m["content"]
-                    else:
-                        parts = [part.get("text", "") for part in m["content"] if isinstance(part, dict)]
-                        content = " ".join(parts)
-                    
-                    x_messages.append({"role": m["role"], "content": content})
+                for m in all_messages[next_pointer:chunk_size+next_pointer]:                    
+                    x_messages.append({"role": m["sender_role"], "content": m["content"]})
+
+                chunk_ts = all_messages[next_pointer + chunk_size - 1]["created_at"]
 
                 # compress current chunk
-                compression_doc = self.grok_client.chat.completions.create(
-                    model="grok-3-mini",
-                    messages=[{"role": "system", "content": midterm_compression_instructions.data[0]["value"]}] + x_messages
+                compression_doc = await asyncio.to_thread(
+                    lambda: self.grok_client.chat.completions.create(
+                        model="grok-3-mini",
+                        messages=[{"role": "system", "content": midterm_compression_instructions.data[0]["value"]}] + x_messages
+                    )
                 )
 
                 # check if empty
                 if not compression_doc.choices[0].message.content:
-                    print("WARNING: Grok returned empty content, skipping compression")
+                    print("ERROR: Grok returned empty content, skipping compression")
                     return None  
 
                 # add summarized compression document to midterm_memory    
@@ -252,8 +271,7 @@ class Pipeline:
                             "conversation_id": current_conversation_id,
                             "summary": {"text": compression_doc.choices[0].message.content},
                             # "embedding":"",
-                            "covers_through": datetime.fromtimestamp(
-                                uncompressed_messages[next_pointer+chunk_size-1]["timestamp"]).isoformat()
+                            "covers_through": chunk_ts
                         })\
                         .execute()
                     )
@@ -265,11 +283,10 @@ class Pipeline:
                 
                 # log completed compression
                 try:
-                    covers_through_ts = datetime.fromtimestamp(uncompressed_messages[next_pointer + chunk_size - 1]["timestamp"]).isoformat()
                     compression_log_result = await asyncio.to_thread(
                         lambda: self.supabase_client.table("compression_log")\
                         .insert( { "conversation_id": current_conversation_id, 
-                                    "covers_through": covers_through_ts })\
+                                    "covers_through": chunk_ts })\
                         .execute()
                     )
                     print(f"Created compression log: {compression_log_result.data[0]}")
@@ -320,7 +337,7 @@ class Pipeline:
                     .eq("doc_type", "content_rating_instructions")\
                     .execute()
                 
-                print(f"Retrieved content rating instructions: {rating_instruction_result.data}")
+                # print(f"Retrieved content rating instructions: {rating_instruction_result.data}")
 
                 rating_instructions = "\n\n".join([r["value"] for r in rating_instruction_result.data])
                 self._rating_instruction_cache = rating_instructions
@@ -363,7 +380,7 @@ class Pipeline:
 
             personality_docs = [r["value"] for r in personality_result.data]
             self._personality_cache = "\n\n".join(personality_docs)
-            return "\n\n".join(personality_docs)
+            return self._personality_cache
         
         except Exception as e:
             raise Exception(f"Could not retrieve personality docs: {e}")
@@ -389,11 +406,32 @@ class Pipeline:
             zee_memory_content = [r["value"] for r in zee_memory_results.data]
             self._zee_memory_cache = "\n\n".join(zee_memory_content)
             self._zee_memory_cached_at = now
-            return "\n\n".join(zee_memory_content)
+            return self._zee_memory_cache
         
         except Exception as e:
-            raise Exception(f"Could not retrieve zee_memory docs: {e}")       
+            raise Exception(f"Could not retrieve zee_memory docs: {e}")
 
+    ###
+    # Retrieve roleplay instructions
+    ###               
+    def seed_rp_missive(self):
+        if self._rp_missive_cache:
+            return self._rp_missive_cache
+    
+        try:
+            rp_missive_result = self.supabase_client.table("engine_config")\
+                .select("value")\
+                .eq("doc_type", "rp_missive")\
+                .execute()
+            
+            print(f"Retrieved RP Missive record: {rp_missive_result.data}")
+
+            rp_missive = [r["value"] for r in rp_missive_result.data]
+            self._rp_missive_cache = "\n\n".join(rp_missive)
+            return self._rp_missive_cache
+        
+        except Exception as e:
+            raise Exception(f"Could not retrieve rp missive docs: {e}")
 
 #####################
 ## Define core Pipelines methods (required)
@@ -431,7 +469,7 @@ class Pipeline:
 
             chunk_size = int(chunk_size_record.data[0]["value"])
             
-            asyncio.create_task(self.run_compression(current_convo_uuid, body, chunk_size))
+            asyncio.create_task(self.run_compression(current_convo_uuid, chunk_size))
             return body
         else:
            raise Exception("ERROR: could not log user message, aborting inlet")
@@ -449,9 +487,10 @@ class Pipeline:
         # retrieve and inject static personality doc
         personality_content = self.seed_personality()
         zee_memory_content = self.seed_zee_memory()
+        rp_missive_content = self.seed_rp_missive()
 
         # compile system mesage
-        system_message = personality_content + "\n\n" + zee_memory_content
+        system_message = rp_missive_content + personality_content + "\n\n" + zee_memory_content
 
 
         # clean messages to pass conversation
