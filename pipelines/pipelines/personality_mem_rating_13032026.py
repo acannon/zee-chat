@@ -165,9 +165,9 @@ class Pipeline:
             return None
 
 #####################
-# Compress to midterm memory
+# COMPRESSION TO MIDTERM MEMORY
 #####################
-    async def run_compression(self, current_conversation_id, body: dict):
+    async def run_compression(self, current_conversation_id, body: dict, chunk_size):
         print("...Beginning compression check...")
 
         # get messages from body
@@ -176,12 +176,14 @@ class Pipeline:
             for m in body["messages"]
         ]
         
-        most_recent_covers_through = self.supabase_client.table("compression_log")\
+        most_recent_covers_through = await asyncio.to_thread(
+            lambda: self.supabase_client.table("compression_log")\
             .select("covers_through")\
             .eq("conversation_id",current_conversation_id)\
             .order("covers_through", desc=True)\
             .limit(1)\
             .execute()
+        )
 
         # if there has been compression for this conversation, get the last_compressed_at timestamp
         if most_recent_covers_through.data:
@@ -189,11 +191,13 @@ class Pipeline:
             latest_compression = most_recent_covers_through.data[0]["covers_through"]
             latest_compression_at_dt = datetime.fromisoformat(latest_compression)
             latest_compression_at_unix = latest_compression_at_dt.timestamp() 
+            print(f"latest_compression: {latest_compression} | _at_dt: {latest_compression_at_dt} | _at_unix: {latest_compression_at_unix}")
 
             # get uncompressed messages
             uncompressed_messages = [m for m in all_messages if m["timestamp"] > latest_compression_at_unix]
             count = len(uncompressed_messages)
 
+            print(f"example uncompressed: {uncompressed_messages[0]}")
             print(f"There have been {count} messages since last compression at {latest_compression_at_dt}.")
 
         else:
@@ -203,31 +207,24 @@ class Pipeline:
 
             print(f"No compression has occurred for this conversation yet. There have been {count} messages.")
 
-
-        # get trigger point for message compression
-        # TODO: error handling
-        trigger_num_record = self.supabase_client.table("engine_config")\
-            .select("value")\
-            .eq("doc_type","compression_trigger_num")\
-            .execute()
-        trigger_num = int(trigger_num_record.data[0]["value"])
-
-        if count > trigger_num:
+        if count > chunk_size:
             print("...Trigger met; running midterm memory compression...")
             # TODO: error handling for db call
-            midterm_compression_instructions = self.supabase_client.table("engine_config")\
+            midterm_compression_instructions = await asyncio.to_thread(
+                lambda: self.supabase_client.table("engine_config")\
                 .select("value")\
                 .eq("doc_type", "midterm_compression")\
                 .execute()
+            )
                     
             count_uncompressed = count
             next_pointer = 0
 
-            while next_pointer < len(uncompressed_messages) and count_uncompressed >= trigger_num:
+            while next_pointer < len(uncompressed_messages) and count_uncompressed >= chunk_size:
                 # create one string from messages in range
                 x_messages = []
 
-                for m in uncompressed_messages[next_pointer:trigger_num+next_pointer]:
+                for m in uncompressed_messages[next_pointer:chunk_size+next_pointer]:
                     if isinstance(m["content"], str):
                         content = m["content"]
                     else:
@@ -249,15 +246,17 @@ class Pipeline:
 
                 # add summarized compression document to midterm_memory    
                 try:
-                    compression_doc_result = self.supabase_client.table("midterm_memory")\
+                    compression_doc_result = await asyncio.to_thread(
+                        lambda: self.supabase_client.table("midterm_memory")\
                         .insert({
                             "conversation_id": current_conversation_id,
                             "summary": {"text": compression_doc.choices[0].message.content},
                             # "embedding":"",
                             "covers_through": datetime.fromtimestamp(
-                                uncompressed_messages[next_pointer+trigger_num-1]["timestamp"]).isoformat()
+                                uncompressed_messages[next_pointer+chunk_size-1]["timestamp"]).isoformat()
                         })\
                         .execute()
+                    )
                     # print(f"Inserted compression doc: {compression_doc_result.data[0]}")
 
                 except Exception as e:
@@ -266,11 +265,13 @@ class Pipeline:
                 
                 # log completed compression
                 try:
-                    covers_through_ts = datetime.fromtimestamp(uncompressed_messages[next_pointer + trigger_num - 1]["timestamp"]).isoformat()
-                    compression_log_result = self.supabase_client.table("compression_log")\
+                    covers_through_ts = datetime.fromtimestamp(uncompressed_messages[next_pointer + chunk_size - 1]["timestamp"]).isoformat()
+                    compression_log_result = await asyncio.to_thread(
+                        lambda: self.supabase_client.table("compression_log")\
                         .insert( { "conversation_id": current_conversation_id, 
                                     "covers_through": covers_through_ts })\
                         .execute()
+                    )
                     print(f"Created compression log: {compression_log_result.data[0]}")
 
                 except Exception as e:
@@ -278,8 +279,8 @@ class Pipeline:
                     return None
                 
                 # advance loop counters
-                next_pointer += trigger_num
-                count_uncompressed -= trigger_num
+                next_pointer += chunk_size
+                count_uncompressed -= chunk_size
 
         # else, there are not enough messages
         else:
@@ -358,7 +359,7 @@ class Pipeline:
                 .eq("doc_type", "personality_injection")\
                 .execute()
             
-            print(f"Retrieved personality record: {personality_result.data}")
+            # print(f"Retrieved personality record: {personality_result.data}")
 
             personality_docs = [r["value"] for r in personality_result.data]
             self._personality_cache = "\n\n".join(personality_docs)
@@ -383,7 +384,7 @@ class Pipeline:
                 .eq("doc_type", "zee_memory")\
                 .execute()
             
-            print(f"Retrieved zee_memory record: {zee_memory_results.data}")
+            # print(f"Retrieved zee_memory record: {zee_memory_results.data}")
 
             zee_memory_content = [r["value"] for r in zee_memory_results.data]
             self._zee_memory_cache = "\n\n".join(zee_memory_content)
@@ -420,8 +421,17 @@ class Pipeline:
 
         if message_logged := self.log_message(body, "in"):
             current_message_uuid, current_convo_uuid = message_logged
-            print("DEBUG compression task starting soon")
-            asyncio.create_task(self.run_compression(current_convo_uuid, body))
+
+            # get trigger point/chunk size for message compression
+            # TODO: error handling
+            chunk_size_record = self.supabase_client.table("engine_config")\
+            .select("value")\
+            .eq("doc_type","compression_trigger_num")\
+            .execute()
+
+            chunk_size = int(chunk_size_record.data[0]["value"])
+            
+            asyncio.create_task(self.run_compression(current_convo_uuid, body, chunk_size))
             return body
         else:
            raise Exception("ERROR: could not log user message, aborting inlet")
