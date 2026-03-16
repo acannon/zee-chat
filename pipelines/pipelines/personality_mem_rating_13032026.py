@@ -21,7 +21,7 @@ class Pipeline:
 #####################
     def __init__(self):
         # self.var_name allows var_name to exist outside of init
-        self.name = "personality_with_memory"
+        self.name = "personality_mem_rating"
         self.ready = False
 
         # create caches
@@ -31,13 +31,25 @@ class Pipeline:
         self._zee_memory_ttl = timedelta(hours=1)
         self._rating_instruction_cache = None        
 
-        # Anthropic client
+        # set up clients
         anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+        grok_api_key = os.getenv("XAI_API_KEY")
+   
+        sb_url = os.getenv("SUPABASE_URL")
+        sb_key = os.getenv("SUPABASE_SERVICE_KEY")
 
+        # confirm keys found
         if not anthropic_api_key:
-            print("ERROR: ANTHROPIC_API_KEY not found")
             self.anthropic_client = None
-        else:
+            raise Exception("ERROR: ANTHROPIC_API_KEY not found")
+        elif not grok_api_key:
+            self.grok_client = None
+            raise Exception("ERROR: XAI_API_KEY not found")
+        elif not sb_url or not sb_key:
+            self.supabase_client = None
+            raise Exception("ERROR: Supabase env vars not found")
+        
+        else:   # all keys found, try clients   
             try:
                 self.anthropic_client = anthropic.Anthropic(api_key=anthropic_api_key)
                 print("SUCCESS: Anthropic connected")
@@ -45,13 +57,6 @@ class Pipeline:
                 print(f"ERROR: Anthropic connection failed: {e}")
                 self.anthropic_client = None
 
-        # Grok client
-        grok_api_key = os.getenv("XAI_API_KEY")
-
-        if not grok_api_key:
-            print("ERROR: XAI_API_KEY not found")
-            self.grok_client = None
-        else:
             try:
                 self.grok_client = OpenAI(
                     api_key=grok_api_key,
@@ -61,16 +66,7 @@ class Pipeline:
             except Exception as e:
                 print(f"ERROR: Grok connection failed: {e}")
                 self.grok_client = None
-        
 
-        # Supabase client
-        sb_url = os.getenv("SUPABASE_URL")
-        sb_key = os.getenv("SUPABASE_SERVICE_KEY")
-
-        if not sb_url or not sb_key:
-            print("ERROR: Supabase env vars not found")
-            self.supabase_client = None
-        else:
             try:
                 self.supabase_client = create_client(sb_url,sb_key)
                 print("SUCCESS: Supabase connected")
@@ -78,6 +74,7 @@ class Pipeline:
                 print(f"ERROR: Supabase connection failed: {e}")
                 self.supabase_client = None
         
+        # if all clients are successful, set ready to true
         if self.anthropic_client and self.supabase_client and self.grok_client:
             self.ready = True
 
@@ -340,7 +337,7 @@ class Pipeline:
             print("Content rating starting...")
             content_rating_response = self.anthropic_client.messages.create(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=100,
+                max_tokens=500,
                 system=rating_instructions,
                 messages=[{"role": "user", "content": message_to_rate}]
             )
@@ -349,6 +346,7 @@ class Pipeline:
             raise Exception(f"ERROR Could not get content rating: {e}")
         
         raw = content_rating_response.content[0].text
+        raw = raw.strip().removeprefix("```json").removesuffix("```").strip()
         parsed = json.loads(raw)
 
         return parsed
@@ -419,16 +417,18 @@ class Pipeline:
             return body
 
         # log user message
-        # all messages must be attached to a conversation, so log message will check
         result = self.log_message(body, "in")
         print(f"DEBUG log_message result: {result}")
 
         # get content rating
         content_rating_response = self.rate_content(body["messages"][-1])
+
+        # TODO: IMPLEMENT MODEL ROUTING BASED ON CONTENT 
         content_rating = content_rating_response["content_rating"]
         print(f"Content rating: {content_rating}")
 
-        # TODO: IMPLEMENT MODEL ROUTING BASED ON CONTENT 
+        if content_rating == "FORBIDDEN":
+            raise Exception("Content flagged as FORBIDDEN — request aborted")
 
         if result:
             message_uuid, conversation_uuid = result
