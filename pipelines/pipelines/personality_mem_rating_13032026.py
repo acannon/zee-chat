@@ -78,6 +78,10 @@ class Pipeline:
         if self.anthropic_client and self.supabase_client and self.grok_client:
             self.ready = True
 
+
+#####################
+## helper methods
+#####################
     def get_conversation_id(self, owui_chat_id):
         # query the database to see if convo has already been logged
         try:
@@ -88,14 +92,10 @@ class Pipeline:
                 .execute()
             
             if result.data:
-                print(f"Found existing conversation record: {result.data[0]}")
                 return result.data[0]["id"]
-            # if no id was found
             else:
-                print(f"Confirmed: No existing conversation id found")
                 return None
         
-        # if database query fails
         except Exception as e:
             print(f"ERROR: get_conversation_id failed {e}")
             return None
@@ -104,32 +104,28 @@ class Pipeline:
  ## LOGGING
  #####################       
     def log_conversation(self, owui_chat_id):
-        # if conversation already exists based on owui_chat_id, don't add
         if conversation_uuid := self.get_conversation_id(owui_chat_id):
             return conversation_uuid
-        else:
-            # else, we need to create the record
+        else:   # create the conversation record
             try:
                 result = self.supabase_client.table("conversation_log")\
                     .insert({"owui_chat_id": owui_chat_id})\
                     .execute()
                 
                 if result.data:
-                    print(f"Created conversation record: {result.data[0]}")
                     return result.data[0]["id"]
                 # this would be a mystery, no record made but not an Exception
                 else:
                     print(f"Record could not be created, unknown cause")
                     return None
         
-            # if database query fails
             except Exception as e:
                 print(f"ERROR: log_conversation failed {e}")
                 return None
         
     def log_message(self, body: dict, io_flag):
         # before we log message, associate it with a conversation uuid
-        # look up conversation in supabase using owui
+        # look up conversation in supabase using owui chat_id
         if io_flag == "in":
             owui_chat_id = body["metadata"]["chat_id"]
             owui_message_id = body["metadata"]["message_id"]
@@ -145,15 +141,13 @@ class Pipeline:
             conversation_uuid = self.log_conversation(owui_chat_id) # conversation id needed for message log
             print(f"conversation_log uuid received: {conversation_uuid}")
         except Exception as e:
-            print("ERROR: Could not find or create conversation log")
-            print(f"ERROR: {e}")
+            print(f"ERROR: Could not find or create conversation log. {e}")
             return None
         
         # TODO: in unlikely instance where owui_message_id exists, abort
-        # else, add record to message_log table
-        message = body["messages"][-1]
-
+        # else, add record to message_log table  
         try:
+            message = body["messages"][-1]
             result = self.supabase_client.table("message_log")\
                 .insert({
                     "conversation_id": conversation_uuid,
@@ -162,10 +156,8 @@ class Pipeline:
                     "owui_message_id": owui_message_id
                 })\
                 .execute()
-            
-            print(f"Created message record: {result.data[0]}")
 
-            # return supabase uuid for newly logged message
+            # return supabase message id and conversation id
             return (result.data[0]["id"], conversation_uuid)
         
         except Exception as e:
@@ -184,73 +176,121 @@ class Pipeline:
             for m in body["messages"]
         ]
         
-        # get most recent compressed_at for current conversation_id
-        last_compression = self.supabase_client.table("compression_log")\
-            .select("compressed_at")\
+        most_recent_covers_through = self.supabase_client.table("compression_log")\
+            .select("covers_through")\
             .eq("conversation_id",current_conversation_id)\
-            .order("compressed_at", desc=True)\
+            .order("covers_through", desc=True)\
             .limit(1)\
             .execute()
 
         # if there has been compression for this conversation, get the last_compressed_at timestamp
-        if last_compression.data:
+        if most_recent_covers_through.data:
             # get timestamp and convert
-            last_compressed_at = last_compression.data[0]["compressed_at"]
-            last_compressed_at_dt = datetime.fromisoformat(last_compressed_at)
-            last_compressed_at_unix = last_compressed_at_dt.timestamp()    
+            latest_compression = most_recent_covers_through.data[0]["covers_through"]
+            latest_compression_at_dt = datetime.fromisoformat(latest_compression)
+            latest_compression_at_unix = latest_compression_at_dt.timestamp() 
 
             # get uncompressed messages
-            uncompressed_messages = [m for m in all_messages if m["timestamp"] > last_compressed_at_unix]
+            uncompressed_messages = [m for m in all_messages if m["timestamp"] > latest_compression_at_unix]
             count = len(uncompressed_messages)
 
-            print(f"There have been {count} messages since last compression at {last_compressed_at_dt}.")
+            print(f"There have been {count} messages since last compression at {latest_compression_at_dt}.")
 
         else:
             uncompressed_messages = all_messages
             count = len(uncompressed_messages)
-            last_compressed_at = None
+            latest_compression = None
 
             print(f"No compression has occurred for this conversation yet. There have been {count} messages.")
 
 
         # get trigger point for message compression
+        # TODO: error handling
         trigger_num_record = self.supabase_client.table("engine_config")\
             .select("value")\
             .eq("doc_type","compression_trigger_num")\
             .execute()
-        
         trigger_num = int(trigger_num_record.data[0]["value"])
 
-        # if count > 20, create an array of the oldest 20 messages 
         if count > trigger_num:
             print("...Trigger met; running midterm memory compression...")
-
-            # get oldest 20 messages that have not been compressed
-            last_x_messages = [
-                {
-                    "role": m["role"],
-                    "content": m["content"] if isinstance(m["content"], str) else " ".join(
-                        part.get("text", "") for part in m["content"] if isinstance(part, dict)
-                    )
-                }
-                for m in uncompressed_messages[:trigger_num]
-                if m.get("content")
-            ]
-
-            # get compression prompt
             # TODO: error handling for db call
             midterm_compression_instructions = self.supabase_client.table("engine_config")\
                 .select("value")\
                 .eq("doc_type", "midterm_compression")\
                 .execute()
+                    
+            count_uncompressed = count
+            next_pointer = 0
 
-            # create compression doc with haiku model
-            # TODO: error handling for anthropic API call
-            print(f"Compression system prompt: {midterm_compression_instructions.data[0]['value'][:200]}")
-            print(f"Message count: {len(last_x_messages)}")
-            print(f"All messages being compressed:")
-            for i, m in enumerate(last_x_messages):
-                print(f"  [{i}] {m['role']}: {repr(m['content'][:100])}")
+            while next_pointer < len(uncompressed_messages) and count_uncompressed >= trigger_num:
+                # create one string from messages in range
+                x_messages = []
+
+                for m in uncompressed_messages[next_pointer:trigger_num+next_pointer]:
+                    if isinstance(m["content"], str):
+                        content = m["content"]
+                    else:
+                        parts = [part.get("text", "") for part in m["content"] if isinstance(part, dict)]
+                        content = " ".join(parts)
+                    
+                    x_messages.append({"role": m["role"], "content": content})
+
+                # compress current chunk
+                compression_doc = self.grok_client.chat.completions.create(
+                    model="grok-3-mini",
+                    messages=[{"role": "system", "content": midterm_compression_instructions.data[0]["value"]}] + x_messages
+                )
+
+                # check if empty
+                if not compression_doc.choices[0].message.content:
+                    print("WARNING: Grok returned empty content, skipping compression")
+                    return None  
+
+                # add summarized compression document to midterm_memory    
+                try:
+                    compression_doc_result = self.supabase_client.table("midterm_memory")\
+                        .insert({
+                            "conversation_id": current_conversation_id,
+                            "summary": {"text": compression_doc.choices[0].message.content},
+                            # "embedding":"",
+                            "covers_through": datetime.fromtimestamp(
+                                uncompressed_messages[next_pointer+trigger_num-1]["timestamp"]).isoformat()
+                        })\
+                        .execute()
+                    # print(f"Inserted compression doc: {compression_doc_result.data[0]}")
+
+                except Exception as e:
+                    print(f"ERROR: compression doc insertion failed: {e}")
+                    return None    
+                
+                # log completed compression
+                try:
+                    covers_through_ts = datetime.fromtimestamp(uncompressed_messages[next_pointer + trigger_num - 1]["timestamp"]).isoformat()
+                    compression_log_result = self.supabase_client.table("compression_log")\
+                        .insert( { "conversation_id": current_conversation_id, 
+                                    "covers_through": covers_through_ts })\
+                        .execute()
+                    print(f"Created compression log: {compression_log_result.data[0]}")
+
+                except Exception as e:
+                    print(f"ERROR: compression log failed: {e}")
+                    return None
+                
+                # advance loop counters
+                next_pointer += trigger_num
+                count_uncompressed -= trigger_num
+
+        # else, there are not enough messages
+        else:
+            print(f"Count since last compression (or beginning) is: {count}; no compression needed")
+            
+            # print(f"Compression system prompt: {midterm_compression_instructions.data[0]['value'][:200]}")
+            # print(f"Message count: {len(last_x_messages)}")
+            # print(f"All messages being compressed:")
+            # for i, m in enumerate(last_x_messages):
+            #     print(f"  [{i}] {m['role']}: {repr(m['content'][:100])}")
+            # print(f"SUMMARY: {compression_doc}")
 
             # compression_doc = self.anthropic_client.messages.create(
             #     model="claude-sonnet-4-20250514",
@@ -258,53 +298,7 @@ class Pipeline:
             #     system=midterm_compression_instructions.data[0]["value"],
             #     messages=last_x_messages
             # )
-            compression_doc = self.grok_client.chat.completions.create(
-                model="grok-3-mini",
-                messages=[{"role": "system", "content": midterm_compression_instructions.data[0]["value"]}] + last_x_messages
-            )
-
-            # compression_text = compression_doc.choices[0].message.content
-            print(f"FULL RESPONSE: {compression_doc}")
-        
-            # check if empty
-            if not compression_doc.choices[0].message.content:
-                print("ERROR: Grok returned empty content, skipping compression")
-                return None
-
-            print(f"SUMMARY: {compression_doc}")
-
-            # add to compression_log
-            try:
-                compression_log_result = self.supabase_client.table("compression_log")\
-                    .insert({
-                        "conversation_id": current_conversation_id
-                    })\
-                    .execute()
-                print(f"Created compression log: {compression_log_result.data[0]}")
-
-            except Exception as e:
-                print(f"ERROR: compression log failed: {e}")
-                return None
-
-            # add compression_doc to midterm_memory           
-            try:
-                compression_doc_result = self.supabase_client.table("midterm_memory")\
-                    .insert({
-                        "conversation_id": current_conversation_id,
-                        "summary": {"text": compression_doc.choices[0].message.content},
-                        # "embedding":"",
-                        "covers_through": datetime.fromtimestamp(
-                            uncompressed_messages[trigger_num-1]["timestamp"]).isoformat()
-                    })\
-                    .execute()
-                print(f"Inserted compression doc: {compression_doc_result.data[0]}")
-
-            except Exception as e:
-                print(f"ERROR: compression doc insertion failed: {e}")
-                return None           
-
-        else:
-            print(f"Count since last compression (or beginning) is: {count}; no compression needed")
+            
 
 #####################
 ## Pre-processing
@@ -407,33 +401,27 @@ class Pipeline:
     # message from user before it goes to llm
     ##
     async def inlet(self, body:dict, user: Optional[dict] = None) -> dict:
-        # ensure init was successful
         if not self.ready:
-            raise Exception("Pipeline not ready — check env vars and Supabase connection")
+            raise Exception("ERROR: Pipeline not initialized. Cannot proceed. Check keys and env_cars")
         
-        # if "user" message is a OWUI system messages, do not log
+        # if current message is an owui message, skip handling
         last_message = body["messages"][-1].get("content", "")
         if last_message.startswith("### Task:"):
             return body
 
-        # log user message
-        result = self.log_message(body, "in")
-        print(f"DEBUG log_message result: {result}")
-
         # get content rating
-        content_rating_response = self.rate_content(body["messages"][-1])
-
         # TODO: IMPLEMENT MODEL ROUTING BASED ON CONTENT 
-        content_rating = content_rating_response["content_rating"]
+        content_rating = (self.rate_content(body["messages"][-1]))["content_rating"]
+        # content_rating = content_rating_response["content_rating"]
         print(f"Content rating: {content_rating}")
 
         if content_rating == "FORBIDDEN":
-            raise Exception("Content flagged as FORBIDDEN — request aborted")
+            raise Exception("WARNING: Content flagged as FORBIDDEN — request aborted")
 
-        if result:
-            message_uuid, conversation_uuid = result
+        if message_logged := self.log_message(body, "in"):
+            current_message_uuid, current_convo_uuid = message_logged
             print("DEBUG compression task starting soon")
-            asyncio.create_task(self.run_compression(conversation_uuid, body))
+            asyncio.create_task(self.run_compression(current_convo_uuid, body))
             return body
         else:
            raise Exception("ERROR: could not log user message, aborting inlet")
